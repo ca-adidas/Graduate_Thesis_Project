@@ -1,0 +1,3 @@
+mean      -> kfold/ 읽고 train 평균으로 결측 대체
+mean_M    -> kfold/ 읽고 평균대체 + 결측지시변수 추가
+M_only    -> kfold/ 원본에서 결측지시변수만 생성
