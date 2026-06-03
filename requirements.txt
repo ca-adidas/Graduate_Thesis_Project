@@ -1,0 +1,14 @@
+```txt
+numpy
+pandas
+scikit-learn
+imbalanced-learn
+xgboost
+scipy
+matplotlib
+seaborn
+openpyxl
+jupyter
+notebook
+tqdm
+```
