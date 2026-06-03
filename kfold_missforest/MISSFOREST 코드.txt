@@ -1,0 +1,531 @@
+# run_missforest_standard_kfold_server_final.py
+# Server version for ~/secom_project/data/kfold/*.xlsx
+# Standard numeric MissForest implementation for k-fold train/valid files.
+#
+# Key rules:
+# - Does NOT use sklearn IterativeImputer.
+# - Excludes the first column(label) from imputation.
+# - Fits imputation models only on each fold's train set.
+# - Transforms each fold's valid set using train-fitted RF models only.
+# - Uses iterative RandomForestRegressor imputation with MissForest-style stopping rule.
+# - Limits thread oversubscription for shared/supercomputer environments.
+#
+# Outputs:
+#   ~/secom_project/results/kfold_missforest_standard_imputed/*.xlsx
+#   ~/secom_project/results/kfold_missforest_standard_imputed.zip
+#
+# Optional:
+#   Process one fold only:
+#       python -u src/run_missforest_standard_kfold_server_final.py --fold 1
+#   Control cores:
+#       python -u src/run_missforest_standard_kfold_server_final.py --n-jobs 8
+#   Save parquet too, if pyarrow/fastparquet is installed:
+#       python -u src/run_missforest_standard_kfold_server_final.py --save-parquet
+
+from __future__ import annotations
+
+# ---------------------------------------------------------------------
+# Thread control must be set before importing numpy/sklearn.
+# This prevents nested parallelism: RF n_jobs workers x BLAS/OpenMP threads.
+# ---------------------------------------------------------------------
+import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+import argparse
+import gc
+import re
+import shutil
+import time
+import warnings
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+
+try:
+    from tqdm import tqdm
+except Exception:
+    def tqdm(iterable: Iterable, **kwargs):
+        return iterable
+
+from sklearn.ensemble import RandomForestRegressor
+
+warnings.filterwarnings("ignore")
+
+# =========================
+# Path settings
+# =========================
+PROJECT_DIR = Path.home() / "secom_project"
+INPUT_DIR = PROJECT_DIR / "data" / "kfold"
+OUTPUT_DIR = PROJECT_DIR / "results" / "kfold_missforest_standard_imputed"
+ZIP_BASENAME = PROJECT_DIR / "results" / "kfold_missforest_standard_imputed"
+RANDOM_STATE = 42
+
+# =========================
+# MissForest settings
+# =========================
+# Original missForest default is ntree=100 and maxiter=10.
+RF_N_ESTIMATORS = 100
+MAX_ITER = 10
+
+# Do not use -1 by default on shared/supercomputer systems.
+# Priority: CLI --n-jobs > MISSFOREST_N_JOBS > SLURM_CPUS_PER_TASK > safe default.
+SAFE_DEFAULT_N_JOBS = min(8, os.cpu_count() or 1)
+
+# For regression, R randomForest default mtry is roughly p/3.
+# sklearn accepts a float ratio for max_features.
+RF_MAX_FEATURES = 1.0 / 3.0
+
+# For validation transform, reuse final train-fitted RF models.
+# Multiple passes stabilize valid imputation because predictors may also be imputed.
+TRANSFORM_ITER = 3
+
+# If a train column is entirely missing, no RF model can be fitted.
+ALL_MISSING_FILL_VALUE = 0.0
+
+
+def resolve_n_jobs(cli_n_jobs: int | None = None) -> int:
+    """Resolve a safe n_jobs value for shared/supercomputer environments."""
+    if cli_n_jobs is not None:
+        return max(1, int(cli_n_jobs))
+
+    env_n_jobs = os.environ.get("MISSFOREST_N_JOBS")
+    if env_n_jobs:
+        return max(1, int(env_n_jobs))
+
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm_cpus:
+        return max(1, int(slurm_cpus))
+
+    return max(1, int(SAFE_DEFAULT_N_JOBS))
+
+
+class NumericMissForest:
+    """Leakage-safe numeric MissForest imputer.
+
+    Implements the main MissForest idea for numeric data:
+    1. Initial median imputation.
+    2. Sort variables by increasing missingness.
+    3. For each variable with missing values, train RandomForestRegressor on observed rows
+       using the other variables, then predict missing rows.
+    4. Repeat until normalized difference increases or max_iter is reached.
+
+    For validation/test transform, final RF models are trained only on the train fold and
+    applied to missing validation values. Train and validation are never concatenated.
+    """
+
+    def __init__(
+        self,
+        n_estimators: int = 100,
+        max_iter: int = 10,
+        max_features: float | str | int | None = 1.0 / 3.0,
+        n_jobs: int = 8,
+        random_state: int = 42,
+        transform_iter: int = 3,
+        all_missing_fill_value: float = 0.0,
+    ) -> None:
+        self.n_estimators = n_estimators
+        self.max_iter = max_iter
+        self.max_features = max_features
+        self.n_jobs = n_jobs
+        self.random_state = random_state
+        self.transform_iter = transform_iter
+        self.all_missing_fill_value = all_missing_fill_value
+
+        self.columns_: list[str] | None = None
+        self.medians_: pd.Series | None = None
+        self.models_: dict[str, RandomForestRegressor] = {}
+        self.impute_order_: list[str] = []
+        self.all_missing_cols_: list[str] = []
+        self.train_imputed_: pd.DataFrame | None = None
+        self.history_: list[float] = []
+
+    def _make_rf(self, col_idx: int, iter_idx: int = 0) -> RandomForestRegressor:
+        return RandomForestRegressor(
+            n_estimators=self.n_estimators,
+            max_features=self.max_features,
+            bootstrap=True,
+            n_jobs=self.n_jobs,
+            random_state=self.random_state + 1009 * iter_idx + 17 * col_idx,
+        )
+
+    def _initial_impute(self, X: pd.DataFrame) -> pd.DataFrame:
+        if self.medians_ is None:
+            medians = X.median(axis=0, skipna=True)
+            medians = medians.fillna(self.all_missing_fill_value)
+            self.medians_ = medians
+        return X.fillna(self.medians_)
+
+    def fit_transform(self, X: pd.DataFrame, extra_model_cols: list[str] | None = None) -> pd.DataFrame:
+        X = X.copy()
+        X = X.apply(pd.to_numeric, errors="coerce")
+        self.columns_ = list(X.columns)
+
+        missing_mask_df = X.isna()
+        missing_counts = missing_mask_df.sum(axis=0)
+        self.all_missing_cols_ = missing_counts[missing_counts == len(X)].index.tolist()
+
+        # Columns to iteratively impute during train fitting.
+        missing_cols = [c for c in missing_counts[missing_counts > 0].index.tolist() if c not in self.all_missing_cols_]
+        self.impute_order_ = sorted(missing_cols, key=lambda c: int(missing_counts[c]))
+
+        X_imp = self._initial_impute(X)
+
+        if self.all_missing_cols_:
+            print(
+                f"  WARNING: train 전체 결측 컬럼 {len(self.all_missing_cols_)}개는 "
+                f"{self.all_missing_fill_value}으로 처리합니다.",
+                flush=True,
+            )
+            for c in self.all_missing_cols_:
+                X_imp[c] = self.all_missing_fill_value
+
+        if not self.impute_order_:
+            print("  INFO: train에 결측이 있는 컬럼이 없어 초기값 기준으로 종료합니다.", flush=True)
+            self.train_imputed_ = X_imp.copy()
+            self._fit_final_models(X_original=X, X_imputed=X_imp, extra_model_cols=extra_model_cols)
+            return X_imp
+
+        prev_diff = np.inf
+        best_X = X_imp.copy()
+        self.history_ = []
+
+        for it in range(1, self.max_iter + 1):
+            iter_start = time.time()
+            X_old = X_imp.copy()
+
+            for col_idx, col in enumerate(self.impute_order_):
+                miss_rows = missing_mask_df[col].to_numpy()
+                obs_rows = ~miss_rows
+
+                if obs_rows.sum() == 0:
+                    X_imp.loc[miss_rows, col] = self.all_missing_fill_value
+                    continue
+
+                predictors = [c for c in self.columns_ if c != col]
+                rf = self._make_rf(col_idx=col_idx, iter_idx=it)
+                rf.fit(X_imp.loc[obs_rows, predictors], X.loc[obs_rows, col])
+                X_imp.loc[miss_rows, col] = rf.predict(X_imp.loc[miss_rows, predictors])
+
+                del rf
+
+            # Continuous-data stopping criterion used by MissForest-style implementations.
+            # Observed entries do not change, so computing on missing entries is sufficient.
+            mask = missing_mask_df.to_numpy()
+            numerator = np.sum((X_imp.to_numpy()[mask] - X_old.to_numpy()[mask]) ** 2)
+            denominator = np.sum((X_imp.to_numpy()[mask]) ** 2)
+            diff = numerator / denominator if denominator > 0 else 0.0
+            self.history_.append(float(diff))
+
+            elapsed = time.time() - iter_start
+            print(f"  iter {it:02d}/{self.max_iter} - normalized diff: {diff:.8f} - {elapsed:.1f}s", flush=True)
+
+            if diff >= prev_diff:
+                print("  stopping: normalized diff가 증가하여 이전 iteration 결과를 사용합니다.", flush=True)
+                X_imp = best_X.copy()
+                break
+
+            prev_diff = diff
+            best_X = X_imp.copy()
+
+            del X_old
+            gc.collect()
+
+        self.train_imputed_ = X_imp.copy()
+        self._fit_final_models(X_original=X, X_imputed=X_imp, extra_model_cols=extra_model_cols)
+        return X_imp
+
+    def _fit_final_models(
+        self,
+        X_original: pd.DataFrame,
+        X_imputed: pd.DataFrame,
+        extra_model_cols: list[str] | None = None,
+    ) -> None:
+        """Fit final RF models on train only for columns needing transform-time imputation."""
+        if self.columns_ is None:
+            raise RuntimeError("fit_transform을 먼저 실행해야 합니다.")
+
+        # valid missingness may indicate which train-fitted model is needed at transform time.
+        # This does not use validation labels or validation observed values for fitting.
+        model_cols = set(self.impute_order_)
+        if extra_model_cols:
+            model_cols.update(extra_model_cols)
+        model_cols = [c for c in self.columns_ if c in model_cols and c not in self.all_missing_cols_]
+
+        self.models_ = {}
+        for col_idx, col in enumerate(model_cols):
+            obs_rows = ~X_original[col].isna().to_numpy()
+            if obs_rows.sum() == 0:
+                continue
+            predictors = [c for c in self.columns_ if c != col]
+            rf = self._make_rf(col_idx=col_idx, iter_idx=999)
+            rf.fit(X_imputed.loc[obs_rows, predictors], X_original.loc[obs_rows, col])
+            self.models_[col] = rf
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        if self.columns_ is None or self.medians_ is None:
+            raise RuntimeError("fit_transform을 먼저 실행해야 합니다.")
+
+        X = X.copy()
+        X = X[self.columns_]
+        X = X.apply(pd.to_numeric, errors="coerce")
+        missing_mask_df = X.isna()
+        X_imp = X.fillna(self.medians_)
+
+        for c in self.all_missing_cols_:
+            if c in X_imp.columns:
+                X_imp[c] = X_imp[c].fillna(self.all_missing_fill_value)
+
+        valid_missing_cols = [c for c in self.columns_ if missing_mask_df[c].any()]
+        ordered_cols = [c for c in self.impute_order_ if c in valid_missing_cols]
+        ordered_cols += [c for c in valid_missing_cols if c not in ordered_cols]
+
+        for _ in range(max(1, self.transform_iter)):
+            for col in ordered_cols:
+                miss_rows = missing_mask_df[col].to_numpy()
+                if not miss_rows.any():
+                    continue
+
+                if col in self.all_missing_cols_ or col not in self.models_:
+                    X_imp.loc[miss_rows, col] = self.medians_.get(col, self.all_missing_fill_value)
+                    continue
+
+                predictors = [c for c in self.columns_ if c != col]
+                X_imp.loc[miss_rows, col] = self.models_[col].predict(X_imp.loc[miss_rows, predictors])
+
+        return X_imp
+
+
+def find_input_dir(default_dir: Path) -> Path:
+    """Find the directory containing fold1_train.xlsx."""
+    if (default_dir / "fold1_train.xlsx").exists():
+        return default_dir
+
+    candidates = list((PROJECT_DIR / "data").rglob("fold1_train.xlsx"))
+    if not candidates:
+        raise FileNotFoundError(
+            "fold1_train.xlsx를 찾지 못했습니다.\n"
+            f"기본 탐색 위치: {default_dir}\n"
+            "kfold.zip이 ~/secom_project/data/ 아래에 제대로 압축 해제되었는지 확인하세요."
+        )
+    return candidates[0].parent
+
+
+def detect_folds(input_dir: Path) -> list[int]:
+    """Detect fold numbers that have both train and valid files."""
+    fold_nums = set()
+    pattern = re.compile(r"fold(\d+)_(train|valid)\.xlsx$")
+
+    for path in input_dir.glob("*.xlsx"):
+        m = pattern.match(path.name)
+        if m:
+            fold_nums.add(int(m.group(1)))
+
+    complete_folds = []
+    for i in sorted(fold_nums):
+        if (input_dir / f"fold{i}_train.xlsx").exists() and (input_dir / f"fold{i}_valid.xlsx").exists():
+            complete_folds.append(i)
+        else:
+            print(f"WARNING: fold{i}는 train/valid 중 하나가 없어 제외합니다.", flush=True)
+
+    if not complete_folds:
+        raise FileNotFoundError("fold{i}_train.xlsx와 fold{i}_valid.xlsx 쌍을 찾지 못했습니다.")
+
+    return complete_folds
+
+
+def save_dataframe(df: pd.DataFrame, path: Path, save_parquet: bool = False) -> None:
+    """Save xlsx for compatibility, and optionally parquet for faster downstream loading."""
+    df.to_excel(path, index=False)
+
+    if save_parquet:
+        parquet_path = path.with_suffix(".parquet")
+        try:
+            df.to_parquet(parquet_path, index=False)
+        except Exception as e:
+            print(f"  WARNING: parquet 저장 실패({parquet_path.name}): {e}", flush=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="K-fold standard numeric MissForest imputation")
+    parser.add_argument("--fold", type=int, default=None, help="Only process one fold number, e.g. --fold 1")
+    parser.add_argument("--n-jobs", type=int, default=None, help="Number of cores for RandomForestRegressor")
+    parser.add_argument("--n-estimators", type=int, default=RF_N_ESTIMATORS, help="Number of RF trees")
+    parser.add_argument("--max-iter", type=int, default=MAX_ITER, help="Maximum MissForest iterations")
+    parser.add_argument("--save-parquet", action="store_true", help="Also save parquet outputs if supported")
+    parser.add_argument(
+        "--keep-existing-output",
+        action="store_true",
+        help="Do not delete output directory before running. Useful for fold-by-fold jobs.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    input_dir = find_input_dir(INPUT_DIR)
+    fold_nums = detect_folds(input_dir)
+
+    env_fold = os.environ.get("FOLD_NUM")
+    selected_fold = args.fold if args.fold is not None else (int(env_fold) if env_fold else None)
+    if selected_fold is not None:
+        if selected_fold not in fold_nums:
+            raise ValueError(f"fold{selected_fold} 파일 쌍을 찾지 못했습니다. 감지된 fold: {fold_nums}")
+        fold_nums = [selected_fold]
+
+    n_jobs = resolve_n_jobs(args.n_jobs)
+
+    if OUTPUT_DIR.exists() and not args.keep_existing_output:
+        shutil.rmtree(OUTPUT_DIR)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ZIP_BASENAME.parent.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 78, flush=True)
+    print("K-Fold Standard Numeric MissForest Imputation - Server Final Version", flush=True)
+    print("=" * 78, flush=True)
+    print(f"PROJECT_DIR      : {PROJECT_DIR}", flush=True)
+    print(f"INPUT_DIR        : {input_dir}", flush=True)
+    print(f"OUTPUT_DIR       : {OUTPUT_DIR}", flush=True)
+    print(f"FOLDS            : {fold_nums}", flush=True)
+    print(f"RANDOM_STATE     : {RANDOM_STATE}", flush=True)
+    print(f"RF_N_ESTIMATORS  : {args.n_estimators}", flush=True)
+    print(f"MAX_ITER         : {args.max_iter}", flush=True)
+    print(f"RF_MAX_FEATURES  : {RF_MAX_FEATURES}", flush=True)
+    print(f"N_JOBS           : {n_jobs}", flush=True)
+    print(f"TRANSFORM_ITER   : {TRANSFORM_ITER}", flush=True)
+    print(f"OMP_NUM_THREADS  : {os.environ.get('OMP_NUM_THREADS')}", flush=True)
+    print(f"MKL_NUM_THREADS  : {os.environ.get('MKL_NUM_THREADS')}", flush=True)
+    print(f"OPENBLAS_THREADS : {os.environ.get('OPENBLAS_NUM_THREADS')}", flush=True)
+    print(f"SAVE_PARQUET     : {args.save_parquet}", flush=True)
+
+    print("\n입력 xlsx 파일 목록:", flush=True)
+    for f in sorted(input_dir.glob("*.xlsx")):
+        print(" -", f.name, flush=True)
+
+    sample_path = input_dir / f"fold{fold_nums[0]}_train.xlsx"
+    sample = pd.read_excel(sample_path)
+    label_col = sample.columns[0]
+    feature_cols = [c for c in sample.columns if c != label_col]
+
+    print("\n샘플 구조 확인", flush=True)
+    print(f"sample file     : {sample_path.name}", flush=True)
+    print(f"sample shape    : {sample.shape}", flush=True)
+    print(f"label column    : {label_col}", flush=True)
+    print(f"feature columns : {len(feature_cols)}", flush=True)
+    print(f"front columns   : {list(sample.columns[:5])}", flush=True)
+    print(f"back columns    : {list(sample.columns[-5:])}", flush=True)
+    print(f"label unique    : {sample[label_col].unique()}", flush=True)
+    print(f"label counts    : {sample[label_col].value_counts().to_dict()}", flush=True)
+    print(f"sample missing  : {sample.isnull().sum().sum()}", flush=True)
+    print(f"missing ratio   : {sample.isnull().sum().sum() / (sample.shape[0] * sample.shape[1]) * 100:.2f}%", flush=True)
+
+    print("\nFold 파일 구조 확인", flush=True)
+    for i in fold_nums:
+        train_df = pd.read_excel(input_dir / f"fold{i}_train.xlsx")
+        valid_df = pd.read_excel(input_dir / f"fold{i}_valid.xlsx")
+        print(f"[fold{i}] train {train_df.shape}, valid {valid_df.shape}", flush=True)
+        del train_df, valid_df
+    gc.collect()
+
+    print("\nMissForest 실행 시작", flush=True)
+    total_start = time.time()
+
+    for i in tqdm(fold_nums, desc="MissForest imputation"):
+        fold_start = time.time()
+        train_path = input_dir / f"fold{i}_train.xlsx"
+        valid_path = input_dir / f"fold{i}_valid.xlsx"
+
+        train_df = pd.read_excel(train_path)
+        valid_df = pd.read_excel(valid_path)
+
+        print(f"\n[fold{i}]", flush=True)
+        print(f"  train shape: {train_df.shape}", flush=True)
+        print(f"  valid shape: {valid_df.shape}", flush=True)
+        print(f"  missing before — train: {train_df.isnull().sum().sum()}, valid: {valid_df.isnull().sum().sum()}", flush=True)
+
+        train_label = train_df[[label_col]].copy()
+        valid_label = valid_df[[label_col]].copy()
+        train_features = train_df[feature_cols].copy()
+        valid_features = valid_df[feature_cols].copy()
+
+        # Fit on train only. valid values are not used for model training.
+        # valid missingness pattern is used only to know which final train-fitted models may be needed.
+        extra_model_cols = valid_features.columns[valid_features.isna().any()].tolist()
+
+        imputer = NumericMissForest(
+            n_estimators=args.n_estimators,
+            max_iter=args.max_iter,
+            max_features=RF_MAX_FEATURES,
+            n_jobs=n_jobs,
+            random_state=RANDOM_STATE + i,
+            transform_iter=TRANSFORM_ITER,
+            all_missing_fill_value=ALL_MISSING_FILL_VALUE,
+        )
+
+        train_imputed_features = imputer.fit_transform(train_features, extra_model_cols=extra_model_cols)
+        valid_imputed_features = imputer.transform(valid_features)
+
+        train_result = pd.concat([train_label, train_imputed_features], axis=1)
+        valid_result = pd.concat([valid_label, valid_imputed_features], axis=1)
+
+        assert train_result[label_col].equals(train_df[label_col])
+        assert valid_result[label_col].equals(valid_df[label_col])
+
+        train_output_path = OUTPUT_DIR / f"fold{i}_train_missforest.xlsx"
+        valid_output_path = OUTPUT_DIR / f"fold{i}_valid_missforest.xlsx"
+        save_dataframe(train_result, train_output_path, save_parquet=args.save_parquet)
+        save_dataframe(valid_result, valid_output_path, save_parquet=args.save_parquet)
+
+        print(f"  missing after  — train: {train_result.isnull().sum().sum()}, valid: {valid_result.isnull().sum().sum()}", flush=True)
+        print(f"  saved: {train_output_path.name}, {valid_output_path.name}", flush=True)
+        print(f"  fold elapsed: {(time.time() - fold_start) / 60:.2f} min", flush=True)
+
+        # Explicit memory cleanup for long supercomputer/server runs.
+        del train_df, valid_df, train_label, valid_label
+        del train_features, valid_features, train_imputed_features, valid_imputed_features
+        del train_result, valid_result, imputer
+        gc.collect()
+
+    print("\n결과 검증", flush=True)
+    result_files = sorted(OUTPUT_DIR.glob("*.xlsx"))
+    print(f"생성된 xlsx 파일 수: {len(result_files)}", flush=True)
+    for f in result_files:
+        size_mb = f.stat().st_size / (1024 * 1024)
+        print(f" - {f.name} ({size_mb:.2f} MB)", flush=True)
+
+    print("\nfold별 결과 확인", flush=True)
+    for i in fold_nums:
+        train_path = OUTPUT_DIR / f"fold{i}_train_missforest.xlsx"
+        valid_path = OUTPUT_DIR / f"fold{i}_valid_missforest.xlsx"
+
+        train_df = pd.read_excel(train_path)
+        valid_df = pd.read_excel(valid_path)
+
+        print(f"\n[fold{i}]", flush=True)
+        print("train shape:", train_df.shape, "missing:", train_df.isnull().sum().sum(), flush=True)
+        print("valid shape:", valid_df.shape, "missing:", valid_df.isnull().sum().sum(), flush=True)
+        print("train label counts:", train_df[label_col].value_counts().to_dict(), flush=True)
+        print("valid label counts:", valid_df[label_col].value_counts().to_dict(), flush=True)
+
+        del train_df, valid_df
+    gc.collect()
+
+    # Create zip only when running all folds, or when single fold still needs transfer convenience.
+    zip_path = Path(str(ZIP_BASENAME) + ".zip")
+    if zip_path.exists():
+        zip_path.unlink()
+    shutil.make_archive(str(ZIP_BASENAME), "zip", OUTPUT_DIR)
+
+    print("\nDONE: k-fold MissForest imputation 완료", flush=True)
+    print(f"결과 폴더: {OUTPUT_DIR}", flush=True)
+    print(f"압축 파일: {zip_path}", flush=True)
+    print(f"전체 소요 시간: {(time.time() - total_start) / 60:.2f} min", flush=True)
+
+
+if __name__ == "__main__":
+    main()

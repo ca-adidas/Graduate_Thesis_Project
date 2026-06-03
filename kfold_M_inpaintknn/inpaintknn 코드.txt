@@ -1,0 +1,394 @@
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from sklearn.neighbors import NearestNeighbors, KNeighborsRegressor
+from sklearn.preprocessing import MinMaxScaler
+
+# =========================================================
+# 설정
+# =========================================================
+desktop = Path.home() / "Desktop"
+
+# 입력 폴더
+input_dir = desktop / "kfold_M"
+
+# 출력 폴더
+output_dir = desktop / "kfold_M_imputed"
+output_dir.mkdir(exist_ok=True)
+
+K_PARAM = 5
+RANDOM_STATE = 42
+
+
+# =========================================================
+# In-painting KNN Imputation 함수
+# =========================================================
+def normalize_between(values, low=6, high=360):
+    values = np.asarray(values, dtype=float)
+
+    if np.nanmax(values) == np.nanmin(values):
+        return np.full_like(values, fill_value=low, dtype=float)
+
+    return low + (values - np.nanmin(values)) * (high - low) / (
+        np.nanmax(values) - np.nanmin(values)
+    )
+
+
+def fill_temp_mean(data):
+    df = pd.DataFrame(data).copy()
+
+    means = df.mean(axis=0, skipna=True)
+
+    # 컬럼 전체가 NaN이면 0으로 대체
+    means = means.fillna(0)
+
+    return df.fillna(means).values
+
+
+def inpainting_knn_impute(data, k=5, verbose=True):
+
+    data = np.array(data, dtype=float).copy()
+
+    n_rows, n_cols = data.shape
+
+    big_value = 360 * 360
+
+    total_missing = np.isnan(data).sum()
+
+    if total_missing == 0:
+        return data
+
+    for step in range(int(total_missing)):
+
+        missing_mask = np.isnan(data)
+
+        if missing_mask.sum() == 0:
+            break
+
+        # =====================================================
+        # 1. Confidence 계산
+        # =====================================================
+        row_missing_count = missing_mask.sum(axis=1)
+        col_missing_count = missing_mask.sum(axis=0)
+
+        confidence = np.full((n_rows, n_cols), big_value, dtype=float)
+
+        missing_positions = np.argwhere(missing_mask)
+
+        for i, j in missing_positions:
+            confidence[i, j] = (
+                row_missing_count[i] + col_missing_count[j]
+            )
+
+        # =====================================================
+        # 2. Familiarity 계산
+        # =====================================================
+        temp_data = fill_temp_mean(data)
+
+        n_neighbors = min(k + 1, n_rows)
+
+        nn = NearestNeighbors(
+            n_neighbors=n_neighbors,
+            metric="euclidean"
+        )
+
+        nn.fit(temp_data)
+
+        distances, _ = nn.kneighbors(temp_data)
+
+        # 자기 자신 제외
+        if n_neighbors > 1:
+            familiarity = distances[:, 1:].sum(axis=1)
+        else:
+            familiarity = np.zeros(n_rows)
+
+        familiarity_norm = normalize_between(
+            familiarity,
+            low=6,
+            high=360
+        )
+
+        # =====================================================
+        # 3. Order 계산
+        # =====================================================
+        order = confidence * familiarity_norm.reshape(-1, 1)
+
+        target_i, target_j = np.unravel_index(
+            np.argmin(order),
+            order.shape
+        )
+
+        # =====================================================
+        # 4. KNN Regression
+        # =====================================================
+        available_rows = ~np.isnan(data[:, target_j])
+
+        # 자기 자신 제외
+        available_rows[target_i] = False
+
+        train_rows = data[available_rows].copy()
+
+        # 학습 가능한 데이터가 거의 없으면 평균 대체
+        if train_rows.shape[0] < 2:
+
+            col_mean = np.nanmean(data[:, target_j])
+
+            if np.isnan(col_mean):
+                col_mean = 0
+
+            prediction = col_mean
+
+        else:
+
+            y_train = train_rows[:, target_j]
+
+            X_train = np.delete(train_rows, target_j, axis=1)
+
+            x_test = np.delete(
+                data[target_i, :],
+                target_j
+            ).reshape(1, -1)
+
+            # 임시 평균 대체
+            X_train = fill_temp_mean(X_train)
+
+            x_test_df = pd.DataFrame(x_test)
+
+            train_means = (
+                pd.DataFrame(X_train)
+                .mean(axis=0)
+                .fillna(0)
+            )
+
+            x_test = x_test_df.fillna(train_means).values
+
+            k_now = min(k, len(y_train))
+
+            reg = KNeighborsRegressor(
+                n_neighbors=k_now,
+                weights="uniform",
+                metric="euclidean"
+            )
+
+            reg.fit(X_train, y_train)
+
+            prediction = reg.predict(x_test)[0]
+
+        data[target_i, target_j] = prediction
+
+        if verbose and (step + 1) % 100 == 0:
+            print(
+                f"  {step + 1}/{total_missing} missing values filled"
+            )
+
+    return data
+
+
+# =========================================================
+# Valid 한 행씩 imputation
+# =========================================================
+def impute_valid_rows_one_by_one(
+    train_imputed,
+    valid_scaled,
+    k=5
+):
+
+    valid_imputed_rows = []
+
+    for idx in range(valid_scaled.shape[0]):
+
+        valid_one = valid_scaled[idx:idx + 1, :].copy()
+
+        combined = np.vstack([
+            train_imputed,
+            valid_one
+        ])
+
+        combined_imputed = inpainting_knn_impute(
+            combined,
+            k=k,
+            verbose=False
+        )
+
+        valid_imputed_rows.append(
+            combined_imputed[-1, :]
+        )
+
+        if (idx + 1) % 20 == 0:
+            print(
+                f"  valid {idx + 1}/{valid_scaled.shape[0]} rows imputed"
+            )
+
+    return np.vstack(valid_imputed_rows)
+
+
+# =========================================================
+# 9-fold 전체 처리
+# =========================================================
+for fold in range(1, 10):
+
+    print(f"\n================ Fold {fold} ================")
+
+    train_path = input_dir / f"fold{fold}_train.xlsx"
+    valid_path = input_dir / f"fold{fold}_valid.xlsx"
+
+    train_df = pd.read_excel(train_path)
+    valid_df = pd.read_excel(valid_path)
+
+    # =====================================================
+    # label 분리
+    # =====================================================
+    label_col = "Column1"
+
+    y_train = train_df[label_col].reset_index(drop=True)
+    y_valid = valid_df[label_col].reset_index(drop=True)
+
+    X_train = train_df.drop(columns=[label_col]).reset_index(drop=True)
+    X_valid = valid_df.drop(columns=[label_col]).reset_index(drop=True)
+
+    # =====================================================
+    # M 변수 분리
+    # =====================================================
+    m_cols = [
+        c for c in X_train.columns
+        if str(c).startswith("M_")
+    ]
+
+    x_cols = [
+        c for c in X_train.columns
+        if c not in m_cols
+    ]
+
+    X_train_main = X_train[x_cols].copy()
+    X_valid_main = X_valid[x_cols].copy()
+
+    M_train = X_train[m_cols].reset_index(drop=True)
+    M_valid = X_valid[m_cols].reset_index(drop=True)
+
+    print("원본 feature 개수:", len(x_cols))
+    print("M 변수 개수:", len(m_cols))
+
+    print("Train shape:", X_train_main.shape)
+    print("Valid shape:", X_valid_main.shape)
+
+    print(
+        "Train missing:",
+        X_train_main.isnull().sum().sum()
+    )
+
+    print(
+        "Valid missing:",
+        X_valid_main.isnull().sum().sum()
+    )
+
+    # =====================================================
+    # Scaling
+    # =====================================================
+    temp_train = X_train_main.copy()
+    temp_valid = X_valid_main.copy()
+
+    train_means = (
+        temp_train
+        .mean(axis=0, skipna=True)
+        .fillna(0)
+    )
+
+    temp_train_for_scaler = temp_train.fillna(train_means)
+    temp_valid_for_scaler = temp_valid.fillna(train_means)
+
+    scaler = MinMaxScaler()
+
+    scaler.fit(temp_train_for_scaler)
+
+    X_train_scaled = scaler.transform(
+        temp_train_for_scaler
+    )
+
+    X_valid_scaled = scaler.transform(
+        temp_valid_for_scaler
+    )
+
+    # 원래 결측 위치 다시 NaN 복원
+    X_train_scaled[
+        pd.isnull(X_train_main).values
+    ] = np.nan
+
+    X_valid_scaled[
+        pd.isnull(X_valid_main).values
+    ] = np.nan
+
+    # =====================================================
+    # Train imputation
+    # =====================================================
+    print("Train imputation 시작")
+
+    X_train_imputed_scaled = inpainting_knn_impute(
+        X_train_scaled,
+        k=K_PARAM,
+        verbose=True
+    )
+
+    # =====================================================
+    # Valid imputation
+    # =====================================================
+    print("Valid imputation 시작")
+
+    X_valid_imputed_scaled = impute_valid_rows_one_by_one(
+        X_train_imputed_scaled,
+        X_valid_scaled,
+        k=K_PARAM
+    )
+
+    # =====================================================
+    # DataFrame 복원
+    # =====================================================
+    X_train_imputed_df = pd.DataFrame(
+        X_train_imputed_scaled,
+        columns=x_cols
+    )
+
+    X_valid_imputed_df = pd.DataFrame(
+        X_valid_imputed_scaled,
+        columns=x_cols
+    )
+
+    # =====================================================
+    # M 변수 다시 결합
+    # =====================================================
+    train_out = pd.concat(
+        [y_train, X_train_imputed_df, M_train],
+        axis=1
+    )
+
+    valid_out = pd.concat(
+        [y_valid, X_valid_imputed_df, M_valid],
+        axis=1
+    )
+
+    # =====================================================
+    # 저장
+    # =====================================================
+    train_out.to_excel(
+        output_dir / f"fold{fold}_train_imputed.xlsx",
+        index=False
+    )
+
+    valid_out.to_excel(
+        output_dir / f"fold{fold}_valid_imputed.xlsx",
+        index=False
+    )
+
+    print("저장 완료")
+
+    print(
+        "Train imputed missing:",
+        train_out.isnull().sum().sum()
+    )
+
+    print(
+        "Valid imputed missing:",
+        valid_out.isnull().sum().sum()
+    )
+
+print("\n🔥 모든 fold In-painting KNN Imputation 완료")
+print("저장 폴더:", output_dir)

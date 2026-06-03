@@ -1,0 +1,284 @@
+# run_mice_kfold_server.py
+# Server version for ~/secom_project/data/kfold/*.xlsx
+# - Excludes the first column(label) from imputation
+# - Fits MICE only on each fold's train set
+# - Transforms each fold's valid set using the train-fitted imputer
+# - Uses BayesianRidge-based IterativeImputer with max_iter=10
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+try:
+    from tqdm import tqdm
+except Exception:  # tqdm is optional
+    def tqdm(iterable, **kwargs):
+        return iterable
+
+from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+from sklearn.impute import IterativeImputer
+from sklearn.linear_model import BayesianRidge
+
+warnings.filterwarnings("ignore")
+
+# =========================
+# Path settings
+# =========================
+PROJECT_DIR = Path.home() / "secom_project"
+INPUT_DIR = PROJECT_DIR / "data" / "kfold"
+OUTPUT_DIR = PROJECT_DIR / "results" / "kfold_mice_imputed"
+ZIP_BASENAME = PROJECT_DIR / "results" / "kfold_mice_imputed"
+RANDOM_STATE = 42
+
+
+def find_input_dir(default_dir: Path) -> Path:
+    """Find the directory containing fold1_train.xlsx."""
+    if (default_dir / "fold1_train.xlsx").exists():
+        return default_dir
+
+    candidates = list((PROJECT_DIR / "data").rglob("fold1_train.xlsx"))
+    if not candidates:
+        raise FileNotFoundError(
+            "fold1_train.xlsx를 찾지 못했습니다.\n"
+            f"기본 탐색 위치: {default_dir}\n"
+            "kfold.zip이 ~/secom_project/data/ 아래에 제대로 압축 해제되었는지 확인하세요."
+        )
+    return candidates[0].parent
+
+
+def detect_folds(input_dir: Path) -> list[int]:
+    """Detect fold numbers that have both train and valid files."""
+    fold_nums = set()
+    pattern = re.compile(r"fold(\d+)_(train|valid)\.xlsx$")
+
+    for path in input_dir.glob("*.xlsx"):
+        m = pattern.match(path.name)
+        if m:
+            fold_nums.add(int(m.group(1)))
+
+    complete_folds = []
+    for i in sorted(fold_nums):
+        if (input_dir / f"fold{i}_train.xlsx").exists() and (input_dir / f"fold{i}_valid.xlsx").exists():
+            complete_folds.append(i)
+        else:
+            print(f"WARNING: fold{i}는 train/valid 중 하나가 없어 제외합니다.")
+
+    if not complete_folds:
+        raise FileNotFoundError("fold{i}_train.xlsx와 fold{i}_valid.xlsx 쌍을 찾지 못했습니다.")
+
+    return complete_folds
+
+
+def mice_impute_fold(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    label_col: str,
+    feature_cols: list[str],
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Apply MICE imputation to one train/valid fold.
+
+    Rules:
+    1. The first column(label) is excluded from imputation.
+    2. The imputer is fitted only on train features.
+    3. Valid features are transformed only with the train-fitted imputer.
+    4. MICE uses BayesianRidge and max_iter=10.
+    """
+
+    # Separate labels. Labels are preserved only for output.
+    train_label = train_df[[label_col]].copy()
+    valid_label = valid_df[[label_col]].copy()
+
+    # Separate features. label_col is not included in feature_cols.
+    train_features = train_df[feature_cols].copy()
+    valid_features = valid_df[feature_cols].copy()
+
+    # Convert to numeric. Non-numeric values become NaN.
+    train_features = train_features.apply(pd.to_numeric, errors="coerce")
+    valid_features = valid_features.apply(pd.to_numeric, errors="coerce")
+
+    # Columns that are entirely missing in train cannot be regression-imputed.
+    all_missing_cols = train_features.columns[train_features.isnull().all()].tolist()
+    mice_cols = [c for c in feature_cols if c not in all_missing_cols]
+
+    if all_missing_cols:
+        print(f"  WARNING: train에서 전체 결측인 컬럼 {len(all_missing_cols)}개는 0 기준으로 처리합니다.")
+
+    train_imputed_features = pd.DataFrame(index=train_df.index)
+    valid_imputed_features = pd.DataFrame(index=valid_df.index)
+
+    if mice_cols:
+        train_mice = train_features[mice_cols].copy()
+        valid_mice = valid_features[mice_cols].copy()
+
+        imputer = IterativeImputer(
+            estimator=BayesianRidge(),
+            max_iter=10,
+            random_state=random_state,
+            initial_strategy="median",
+            imputation_order="ascending",
+            skip_complete=True,
+            verbose=0,
+        )
+
+        # Fit only on train.
+        imputer.fit(train_mice)
+
+        train_imputed_part = pd.DataFrame(
+            imputer.transform(train_mice),
+            columns=mice_cols,
+            index=train_df.index,
+        )
+        valid_imputed_part = pd.DataFrame(
+            imputer.transform(valid_mice),
+            columns=mice_cols,
+            index=valid_df.index,
+        )
+
+        train_imputed_features[mice_cols] = train_imputed_part
+        valid_imputed_features[mice_cols] = valid_imputed_part
+
+    # Handle columns that are fully missing in train.
+    for c in all_missing_cols:
+        train_imputed_features[c] = 0
+        valid_imputed_features[c] = valid_features[c].fillna(0)
+
+    # Restore original feature order.
+    train_imputed_features = train_imputed_features[feature_cols]
+    valid_imputed_features = valid_imputed_features[feature_cols]
+
+    # Reattach label column.
+    train_result = pd.concat([train_label, train_imputed_features], axis=1)
+    valid_result = pd.concat([valid_label, valid_imputed_features], axis=1)
+
+    # Label preservation check.
+    assert train_result[label_col].equals(train_df[label_col])
+    assert valid_result[label_col].equals(valid_df[label_col])
+
+    return train_result, valid_result
+
+
+def main() -> None:
+    input_dir = find_input_dir(INPUT_DIR)
+    fold_nums = detect_folds(input_dir)
+
+    # Reset output directory.
+    if OUTPUT_DIR.exists():
+        shutil.rmtree(OUTPUT_DIR)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ZIP_BASENAME.parent.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 70)
+    print("K-Fold MICE Imputation - Server Version")
+    print("=" * 70)
+    print(f"PROJECT_DIR  : {PROJECT_DIR}")
+    print(f"INPUT_DIR    : {input_dir}")
+    print(f"OUTPUT_DIR   : {OUTPUT_DIR}")
+    print(f"FOLDS        : {fold_nums}")
+    print(f"RANDOM_STATE : {RANDOM_STATE}")
+
+    print("\n입력 xlsx 파일 목록:")
+    for f in sorted(input_dir.glob("*.xlsx")):
+        print(" -", f.name)
+
+    # Sample structure check.
+    sample_path = input_dir / f"fold{fold_nums[0]}_train.xlsx"
+    sample = pd.read_excel(sample_path)
+    label_col = sample.columns[0]
+    feature_cols = [c for c in sample.columns if c != label_col]
+
+    print("\n샘플 구조 확인")
+    print(f"sample file     : {sample_path.name}")
+    print(f"sample shape    : {sample.shape}")
+    print(f"label column    : {label_col}")
+    print(f"feature columns : {len(feature_cols)}")
+    print(f"front columns   : {list(sample.columns[:5])}")
+    print(f"back columns    : {list(sample.columns[-5:])}")
+    print(f"label unique    : {sample[label_col].unique()}")
+    print(f"label counts    : {sample[label_col].value_counts().to_dict()}")
+    print(f"sample missing  : {sample.isnull().sum().sum()}")
+    print(f"missing ratio   : {sample.isnull().sum().sum() / (sample.shape[0] * sample.shape[1]) * 100:.2f}%")
+
+    # Fold structure check.
+    print("\nFold 파일 구조 확인")
+    for i in fold_nums:
+        train_path = input_dir / f"fold{i}_train.xlsx"
+        valid_path = input_dir / f"fold{i}_valid.xlsx"
+        train_df = pd.read_excel(train_path)
+        valid_df = pd.read_excel(valid_path)
+        print(f"[fold{i}] train {train_df.shape}, valid {valid_df.shape}")
+
+    # Run MICE.
+    print("\nMICE 실행 시작")
+    for i in tqdm(fold_nums, desc="MICE imputation"):
+        train_path = input_dir / f"fold{i}_train.xlsx"
+        valid_path = input_dir / f"fold{i}_valid.xlsx"
+
+        train_df = pd.read_excel(train_path)
+        valid_df = pd.read_excel(valid_path)
+
+        print(f"\n[fold{i}]")
+        print(f"  train shape: {train_df.shape}")
+        print(f"  valid shape: {valid_df.shape}")
+        print(f"  missing before — train: {train_df.isnull().sum().sum()}, valid: {valid_df.isnull().sum().sum()}")
+
+        train_imputed, valid_imputed = mice_impute_fold(
+            train_df=train_df,
+            valid_df=valid_df,
+            label_col=label_col,
+            feature_cols=feature_cols,
+            random_state=RANDOM_STATE,
+        )
+
+        train_output_path = OUTPUT_DIR / f"fold{i}_train_mice.xlsx"
+        valid_output_path = OUTPUT_DIR / f"fold{i}_valid_mice.xlsx"
+
+        train_imputed.to_excel(train_output_path, index=False)
+        valid_imputed.to_excel(valid_output_path, index=False)
+
+        print(f"  missing after  — train: {train_imputed.isnull().sum().sum()}, valid: {valid_imputed.isnull().sum().sum()}")
+        print(f"  saved: {train_output_path.name}, {valid_output_path.name}")
+
+    # Result validation.
+    print("\n결과 검증")
+    result_files = sorted(OUTPUT_DIR.glob("*.xlsx"))
+    print(f"생성된 xlsx 파일 수: {len(result_files)}")
+    for f in result_files:
+        size_mb = f.stat().st_size / (1024 * 1024)
+        print(f" - {f.name} ({size_mb:.2f} MB)")
+
+    print("\nfold별 결과 확인")
+    for i in fold_nums:
+        train_path = OUTPUT_DIR / f"fold{i}_train_mice.xlsx"
+        valid_path = OUTPUT_DIR / f"fold{i}_valid_mice.xlsx"
+
+        train_df = pd.read_excel(train_path)
+        valid_df = pd.read_excel(valid_path)
+
+        print(f"\n[fold{i}]")
+        print("train shape:", train_df.shape, "missing:", train_df.isnull().sum().sum())
+        print("valid shape:", valid_df.shape, "missing:", valid_df.isnull().sum().sum())
+        print("train label counts:", train_df[label_col].value_counts().to_dict())
+        print("valid label counts:", valid_df[label_col].value_counts().to_dict())
+
+    # Create zip archive.
+    zip_path = Path(str(ZIP_BASENAME) + ".zip")
+    if zip_path.exists():
+        zip_path.unlink()
+    shutil.make_archive(str(ZIP_BASENAME), "zip", OUTPUT_DIR)
+
+    print("\nDONE: k-fold MICE imputation 완료")
+    print(f"결과 폴더: {OUTPUT_DIR}")
+    print(f"압축 파일: {zip_path}")
+
+
+if __name__ == "__main__":
+    main()
