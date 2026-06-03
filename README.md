@@ -1,4 +1,5 @@
 # B.S. Graduation Thesis in Industrial Engineering
+### 설계에 사용된 노트는 notebooks 폴더의 01_baseline을 참조바랍니다.
 
 ## Overview
 
