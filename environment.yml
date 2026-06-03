@@ -1,0 +1,22 @@
+name: thesis-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytest
+  - flake8
+  - pip:
+    - numpy
+    - pandas
+    - scikit-learn
+    - imbalanced-learn
+    - xgboost
+    - scipy
+    - matplotlib
+    - seaborn
+    - openpyxl
+    - jupyter
+    - notebook
+    - tqdm
