@@ -1,0 +1,39 @@
+```gitignore
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# Model checkpoints
+checkpoint/
+checkpoints/
+
+# Experiment outputs
+kfold/
+kfold_M/
+kfold_inpaintknn/
+kfold_mice/
+kfold_missforest/
+kfold_M_inpaintknn/
+kfold_M_mice/
+kfold_M_missforest/
+
+# Temporary files
+*.tmp
+*.temp
+```
