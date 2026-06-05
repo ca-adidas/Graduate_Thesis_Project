@@ -171,42 +171,42 @@ TNR은 실제 정상 샘플을 정상으로 올바르게 분류한 비율이다.
 
 ```text
 Graduate_Thesis_Project/
-├── .github/                          # GitHub Actions workflows, settings
-├── .gitignore                        # Git 추적 제외 파일 목록
-├── README.md                         # 프로젝트 개요 및 설명서
-├── environment.yml                   # Conda 환경 설정 파일
-├── requirements.txt                  # pip 패키지 의존성 목록
-├── Old/                              # 구버전 코드 및 파일 보관
-├── checkpoint/                       # 실험 중간 저장 파일 및 체크포인트
+├── .github/                          
+├── .gitignore                        
+├── README.md                         
+├── environment.yml                   
+├── requirements.txt                  
+├── Old/                              
+├── checkpoint/                       
 ├── data/
-│   ├── raw/                          # 원본 SECOM 데이터셋
-│   └── processed/                    # 전처리된 데이터 (결측률 제거, 저분산 제거, train/test 분할)
+│   ├── raw/                          
+│   └── processed/                    
 ├── docs/
-│   ├── thesis_summary.md             # 졸업논문 요약 (배경, 방법론, 결과, 결론)
-│   ├── Paper/                        # 논문 원문 및 관련 자료
-│   └── results/                      # 분석 결과 및 추가 문서
-├── experiments/                      # K-Fold 교차검증 실험 결과
-│   ├── mean, mean_M, M_only.txt     # Mean, Mean + M, M_only 조건 참고사항
-│   ├── kfold/                        # Raw 조건 기반 K-Fold 실험 결과
-│   ├── kfold_M/                      # Missing Indicator(M feature) 추가 K-Fold 결과
-│   ├── kfold_inpaintknn/             # Inpainting KNN 결측치 대치 K-Fold 결과
-│   ├── kfold_mice/                   # MICE 결측치 대치 K-Fold 결과
-│   ├── kfold_missforest/             # MissForest 결측치 대치 K-Fold 결과
-│   ├── kfold_M_inpaintknn/           # Inpainting KNN + M feature K-Fold 결과
-│   ├── kfold_M_mice/                 # MICE + M feature K-Fold 결과
-│   └── kfold_M_missforest/           # MissForest + M feature K-Fold 결과
+│   ├── thesis_summary.md             
+│   ├── Paper/                        
+│   └── results/                      
+├── experiments/                      
+│   ├── mean, mean_M, M_only.txt     
+│   ├── kfold/                        
+│   ├── kfold_M/                      
+│   ├── kfold_inpaintknn/             
+│   ├── kfold_mice/                   
+│   ├── kfold_missforest/             
+│   ├── kfold_M_inpaintknn/          
+│   ├── kfold_M_mice/                 
+│   └── kfold_M_missforest/           
 ├── notebooks/
-│   ├── 00_archive/                   # 구버전 노트북 보관
-│   └── 01_Baseline.ipynb             # 주요 분석 및 실험 Jupyter Notebook
-├── results/                          # 최종 실험 결과 및 시각화
-│   ├── analysis_results.xlsx         # 전체 실험 결과 및 성능 분석
-│   ├── m_feature_comparison_by_fold.xlsx    # Fold별 M feature 추가 효과 비교
-│   ├── m_feature_comparison_summary.xlsx    # M feature 추가 여부 성능 차이 비교 요약
-│   ├── simple_baseline_mean_lr_raw.xlsx     # 단순 Baseline (Mean, Logistic Regression, Raw) 결과
-│   ├── summary_by_pipeline.xlsx             # 파이프라인 조합별 성능 요약 (최종 결과)
-│   └── visualizations/               # 실험 결과 시각화 (그래프, 차트)
+│   ├── 00_archive/                   
+│   └── 01_Baseline.ipynb             
+├── results/                          
+│   ├── analysis_results.xlsx         
+│   ├── m_feature_comparison_by_fold.xlsx    
+│   ├── m_feature_comparison_summary.xlsx    
+│   ├── simple_baseline_mean_lr_raw.xlsx     
+│   ├── summary_by_pipeline.xlsx             
+│   └── visualizations/               
 └── src/
-    └── Base.py                       # 데이터 전처리, 결측치 대치, 특성 선택, 모델 학습 및 평가 메인 코드
+    └── Base.py                       
 ```
 
 ### Directory
