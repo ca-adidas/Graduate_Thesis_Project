@@ -171,59 +171,63 @@ TNR은 실제 정상 샘플을 정상으로 올바르게 분류한 비율이다.
 
 ```text
 Graduate_Thesis_Project/
-├── .github/
-├── .gitignore
-├── README.md
-├── environment.yml
-├── requirements.txt
-├── Old/
-├── checkpoint/
+├── .github/                          # GitHub Actions workflows, settings
+├── .gitignore                        # Git 추적 제외 파일 목록
+├── README.md                         # 프로젝트 개요 및 설명서
+├── environment.yml                   # Conda 환경 설정 파일
+├── requirements.txt                  # pip 패키지 의존성 목록
+├── Old/                              # 구버전 코드 및 파일 보관
+├── checkpoint/                       # 실험 중간 저장 파일 및 체크포인트
 ├── data/
-│   ├── raw/
-│   └── processed/
+│   ├── raw/                          # 원본 SECOM 데이터셋
+│   └── processed/                    # 전처리된 데이터 (결측률 제거, 저분산 제거, train/test 분할)
 ├── docs/
-│   └── thesis_summary.md
-├── experiments/
-│   ├── mean, mean_M, M_only.txt
-│   ├── kfold/
-│   ├── kfold_M/
-│   ├── kfold_inpaintknn/
-│   ├── kfold_mice/
-│   ├── kfold_missforest/
-│   ├── kfold_M_inpaintknn/
-│   ├── kfold_M_mice/
-│   └── kfold_M_missforest/
+│   ├── thesis_summary.md             # 졸업논문 요약 (배경, 방법론, 결과, 결론)
+│   ├── Paper/                        # 논문 원문 및 관련 자료
+│   └── results/                      # 분석 결과 및 추가 문서
+├── experiments/                      # K-Fold 교차검증 실험 결과
+│   ├── mean, mean_M, M_only.txt     # Mean, Mean + M, M_only 조건 참고사항
+│   ├── kfold/                        # Raw 조건 기반 K-Fold 실험 결과
+│   ├── kfold_M/                      # Missing Indicator(M feature) 추가 K-Fold 결과
+│   ├── kfold_inpaintknn/             # Inpainting KNN 결측치 대치 K-Fold 결과
+│   ├── kfold_mice/                   # MICE 결측치 대치 K-Fold 결과
+│   ├── kfold_missforest/             # MissForest 결측치 대치 K-Fold 결과
+│   ├── kfold_M_inpaintknn/           # Inpainting KNN + M feature K-Fold 결과
+│   ├── kfold_M_mice/                 # MICE + M feature K-Fold 결과
+│   └── kfold_M_missforest/           # MissForest + M feature K-Fold 결과
 ├── notebooks/
-│   ├── 00_archive/
-│   └── 01_Baseline.ipynb
-├── results/
-│   ├── analysis_results.xlsx
-│   ├── m_feature_comparison_by_fold.xlsx
-│   ├── m_feature_comparison_summary.xlsx
-│   ├── simple_baseline_mean_lr_raw.xlsx
-│   ├── summary_by_pipeline.xlsx
-│   └── visualizations/
+│   ├── 00_archive/                   # 구버전 노트북 보관
+│   └── 01_Baseline.ipynb             # 주요 분석 및 실험 Jupyter Notebook
+├── results/                          # 최종 실험 결과 및 시각화
+│   ├── analysis_results.xlsx         # 전체 실험 결과 및 성능 분석
+│   ├── m_feature_comparison_by_fold.xlsx    # Fold별 M feature 추가 효과 비교
+│   ├── m_feature_comparison_summary.xlsx    # M feature 추가 여부 성능 차이 비교 요약
+│   ├── simple_baseline_mean_lr_raw.xlsx     # 단순 Baseline (Mean, Logistic Regression, Raw) 결과
+│   ├── summary_by_pipeline.xlsx             # 파이프라인 조합별 성능 요약 (최종 결과)
+│   └── visualizations/               # 실험 결과 시각화 (그래프, 차트)
 └── src/
-    └── Base.py
+    └── Base.py                       # 데이터 전처리, 결측치 대치, 특성 선택, 모델 학습 및 평가 메인 코드
 ```
 
 ### Directory
 
 | 디렉터리 / 파일                                   | 설명                                                                                              |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `.github/`                                  | GitHub 설정 파일 저장 폴더               |
+| `.github/`                                  | GitHub 설정 파일 및 Actions workflows 저장 폴더               |
 | `.gitignore`                                | Git 추적에서 제외할 파일 및 폴더를 지정         |
 | `README.md`                                 | 프로젝트 개요, 연구 목적, 데이터셋, 실험 파이프라인, 저장소 구조를 설명                                           |
 | `environment.yml`                           | Conda 환경 재현 설정 / 프로젝트 실행에 필요한 Python 버전 + 주요 패키지 의존성                              |
 | `requirements.txt`                          | pip 기반 패키지 설치를 위한 의존성 목록 파일   |
 | `Old/`                                      | 이전 버전의 코드, 노트북, 결과물 또는 더 이상 사용하지 않는 파일 보관 / 과거 파일 분리 |
 | `checkpoint/`                               | 실험 중간 저장 파일, 모델 체크포인트                                                   |
-| `data/`                                     | 프로젝트 데이터 파일을 / 원본 데이터 & 전처리 데이터 구분                                      |
-| `data/raw/`                                 | 원본 SECOM 데이터셋 + 초기 수집 데이터                                                          |
-| `data/processed/`                           | 결측률 기준 제거, low 분산 변수 제거, train/test 분할                                |
+| `data/`                                     | 프로젝트 데이터 파일 저장소 (원본 데이터 & 전처리 데이터 구분)                                      |
+| `data/raw/`                                 | 원본 SECOM 데이터셋                                                          |
+| `data/processed/`                           | 정제된 데이터 (결측률 기준 제거, 저분산 변수 제거, train/test 분할 등)                                |
 | `docs/`                                     | 논문 요약, 방법론 설명, 추가 분석 문서                             |
-| `docs/thesis_summary.md`                    | 졸업논문의 연구 배경, 방법론, 실험 결과, 결론 summary                                             |
-| `experiments/`                              | 결측치 대치 방법 + M feature 적용 여부 실험한 K-Fold 실험 결과 저장                                         |
+| `docs/thesis_summary.md`                    | 졸업논문의 연구 배경, 방법론, 실험 결과, 결론 요약                                             |
+| `docs/Paper/`                               | 논문 원문 및 관련 자료 저장                                           |
+| `docs/results/`                             | 추가 분석 결과 및 중간 결과물 저장                                             |
+| `experiments/`                              | 결측치 대치 방법 + M feature 적용 여부 별 K-Fold 실험 결과 저장                                         |
 | `experiments/mean, mean_M, M_only.txt`      | Mean, Mean + M, M_only 조건 실험 참고사항                                             |
 | `experiments/kfold/`                        | 기본 Raw 조건 기반 K-Fold 실험 결과 저장                                                           |
 | `experiments/kfold_M/`                      | Missing Indicator(M feature) 추가한 K-Fold 실험 결과 저장                                    |
@@ -232,7 +236,7 @@ Graduate_Thesis_Project/
 | `experiments/kfold_missforest/`             | MissForest 결측치 대치 K-Fold 실험 결과 저장                                              |
 | `experiments/kfold_M_inpaintknn/`           | Inpainting KNN 결측치 대치 + M feature K-Fold 실험 결과 저장                               |
 | `experiments/kfold_M_mice/`                 | MICE 결측치 대치 + M feature K-Fold 실험 결과 저장                                         |
-| `experiments/kfold_M_missforest/`           | MissForest 결측치 대치 M feature K-Fold 실험 결과 저장                                   |
+| `experiments/kfold_M_missforest/`           | MissForest 결측치 대치 + M feature K-Fold 실험 결과 저장                                   |
 | `notebooks/`                                | Jupyter Notebook(데이터 분석, 전처리, 모델 실험, 결과 확인)                                  |
 | `notebooks/00_archive/`                     | 구버전 노트북                                              |
 | `notebooks/01_Baseline.ipynb`               | baseline 실험 핵심파일 = 주요 분석 과정 Jupyter Notebook                                         |
@@ -240,10 +244,8 @@ Graduate_Thesis_Project/
 | `results/analysis_results.xlsx`             | 전체 실험 결과 + 주요 성능 분석 결과 정리                                                           |
 | `results/m_feature_comparison_by_fold.xlsx` | Fold별 M feature 추가 효과 비교                                                             |
 | `results/m_feature_comparison_summary.xlsx` | M feature 추가 여부에 따른 성능 차이 비교, 요약                                                         |
-| `results/simple_baseline_mean_lr_raw.xlsx`  | Mean imputation, Logistic Regression, Raw 조건 등 simpel baseline 조합 결과 정리                    |
+| `results/simple_baseline_mean_lr_raw.xlsx`  | Mean imputation, Logistic Regression, Raw 조건 등 simple baseline 조합 결과 정리                    |
 | `results/summary_by_pipeline.xlsx`          | 파이프라인 조합별 성능 요약 (최종 결과 확인)                                                                   |
 | `results/visualizations/`                   | 실험 결과 시각화(그래프, 그림, 차트)                                                          |
 | `src/`                                      | Python 소스코드                                                       |
 | `src/Base.py`                               | 데이터 전처리, 결측치 대치, feature selection, 모델 학습 및 평가, 주요실험코드 py                     |
-
-
