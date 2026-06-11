@@ -22,7 +22,7 @@
 
   논문 원본 및 설계에 인용된 결과 Table, 시각화 자료, figures는 <code>docs</code> 폴더를 참조 바랍니다.<br>
 
-  논문 및 figures는 <code>paper</code>, 이외 Table 및 시각화 자료는 <code>results</code>를 참조 바랍니다.
+  (논문 및 figures는 <code>docs/paper</code>, 이외 Table 및 시각화 자료는 <code>docs/results</code>)
 
 </p>
 
