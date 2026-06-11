@@ -12,7 +12,7 @@
 
 <p>
 
-  설계에 사용된 노트는 <code>notebooks/02_baseline.ipynb</code>을 참조 바랍니다.
+  <h3>설계에 사용된 노트는 <code>notebooks/02_baseline.ipynb</code>을 참조 바랍니다.
 
 </p>
 
@@ -20,9 +20,9 @@
 
 <p>
 
-  논문 원본 및 설계에 인용된 결과 Table, 시각화 자료, figures는 <code>docs</code> 폴더를 참조 바랍니다.<br>
+  <h3>논문 원본 및 설계에 인용된 결과 Table, 시각화 자료, figures는 <code>docs</code> 폴더를 참조 바랍니다.<br>
 
-  (논문 및 figures는 <code>docs/paper</code>, 이외 Table 및 시각화 자료는 <code>docs/results</code>)
+  <h3>(논문 및 figures는 <code>docs/paper</code>, 이외 Table 및 시각화 자료는 <code>docs/results</code>)
 
 </p>
 
@@ -268,7 +268,7 @@ Graduate_Thesis_Project/
 | `experiments/kfold_M_missforest/`           | MissForest 결측치 대치 + M feature K-Fold 실험 결과 저장                                   |
 | `notebooks/`                                | Jupyter Notebook(데이터 분석, 전처리, 모델 실험, 결과 확인)                                  |
 | `notebooks/00_archive/`                     | 구버전 노트북                                              |
-| `notebooks/01_Baseline.ipynb`               | baseline 실험 핵심파일 = 주요 분석 과정 Jupyter Notebook                                         |
+| `notebooks/02_Baseline.ipynb`               | baseline 실험 핵심파일 = 주요 분석 과정 Jupyter Notebook                                         |
 | `results/`                                  | 최종 실험 결과 + 성능 비교표 + 요약 분석 결과 저장 (시각화)                                                          |
 | `results/analysis_results.xlsx`             | 전체 실험 결과 + 주요 성능 분석 결과 정리                                                           |
 | `results/m_feature_comparison_by_fold.xlsx` | Fold별 M feature 추가 효과 비교                                                             |
