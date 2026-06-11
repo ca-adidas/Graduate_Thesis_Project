@@ -210,10 +210,10 @@ Graduate_Thesis_Project/
 ├── data/
 │   ├── raw/                          
 │   └── processed/                    
-├── docs/
+├── ⭐docs/
 │   ├── thesis_summary.md             
-│   ├── Paper/                        
-│   └── results/                      
+│   ├── ⭐Paper/                        
+│   └── ⭐results/                      
 ├── experiments/                      
 │   ├── mean, mean_M, M_only.txt     
 │   ├── kfold/                        
@@ -226,7 +226,7 @@ Graduate_Thesis_Project/
 │   └── kfold_M_missforest/           
 ├── notebooks/
 │   ├── 00_archive/                   
-│   └── 02_Baseline.ipynb             
+│   └── ⭐02_Baseline.ipynb             
 ├── results/                          
 │   ├── analysis_results.xlsx         
 │   ├── m_feature_comparison_by_fold.xlsx    
