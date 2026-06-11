@@ -1,7 +1,34 @@
-# Machine Learning Pipeline Analysis for Improving Semiconductor Defect Detection Performance in Missing Value and Class Imbalanced Environments
-# 결측치 및 클래스 불균형 환경에서의 반도체 불량 검출 성능 향상을 위한 머신러닝 파이프라인 분석
-### 설계에 사용된 노트는 notebooks 폴더의 01_baseline을 참조 바랍니다.
-### 논문 원본 및 설계에 인용된 결과 Table, 시각화 자료, figures는 docs 폴더를 참조 바합나다. (논문 및 figures는 paper / 이외 Table 및 시각화는 results)
+<div align="center">
+
+
+
+<h1>Machine Learning Pipeline Analysis for Improving Semiconductor Defect Detection Performance in Missing Value and Class Imbalanced Environments</h1>
+
+
+
+<h2>결측치 및 클래스 불균형 환경에서의 반도체 불량 검출 성능 향상을 위한 머신러닝 파이프라인 분석</h2>
+
+
+
+<p>
+
+  설계에 사용된 노트는 <code>notebooks/01_baseline</code>을 참조 바랍니다.
+
+</p>
+
+
+
+<p>
+
+  논문 원본 및 설계에 인용된 결과 Table, 시각화 자료, figures는 <code>docs</code> 폴더를 참조 바랍니다.<br>
+
+  논문 및 figures는 <code>paper</code>, 이외 Table 및 시각화 자료는 <code>results</code>를 참조 바랍니다.
+
+</p>
+
+
+
+</div>
 
 ## Overview
 
