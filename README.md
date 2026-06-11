@@ -12,7 +12,7 @@
 
 <p>
 
-  설계에 사용된 노트는 <code>notebooks/02_baseline</code>을 참조 바랍니다.
+  설계에 사용된 노트는 <code>notebooks/02_baseline.ipynb</code>을 참조 바랍니다.
 
 </p>
 
