@@ -255,7 +255,7 @@ Graduate_Thesis_Project/
 | `docs/`                                     | 논문 요약, 방법론 설명, 추가 분석 문서                             |
 | `docs/thesis_summary.md`                    | 졸업논문의 연구 배경, 방법론, 실험 결과, 결론 요약                                             |
 | `docs/Paper/`                               | 논문 원문 및 관련 자료 저장                                           |
-| `docs/results/`                             | ### 추가 분석 결과 및 중간 결과물 저장                                             |
+| `docs/results/`                             | 추가 분석 결과 및 중간 결과물 저장                                             |
 | `experiments/`                              | 결측치 대치 방법 + M feature 적용 여부 별 K-Fold 실험 결과 저장                                         |
 | `experiments/mean, mean_M, M_only.txt`      | Mean, Mean + M, M_only 조건 실험 참고사항                                             |
 | `experiments/kfold/`                        | 기본 Raw 조건 기반 K-Fold 실험 결과 저장                                                           |
